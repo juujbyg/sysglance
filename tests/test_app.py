@@ -72,3 +72,22 @@ def test_version_flag(capsys, monkeypatch):
         app.main()
     assert exit_info.value.code == 0
     assert capsys.readouterr().out.strip() == f"sysglance {__version__}"
+
+
+class FakeStdout:
+    def __init__(self):
+        self.config = None
+
+    def reconfigure(self, **config):
+        self.config = config
+
+
+@pytest.mark.parametrize("is_windows, expected", [
+    (True, {"encoding": "utf-8", "errors": "replace"}), (False, None),
+])
+def test_output_encoding_is_forced_only_on_windows(monkeypatch, is_windows, expected):
+    stdout = FakeStdout()
+    monkeypatch.setattr(app._compat, "IS_WIN", is_windows)
+    monkeypatch.setattr("sys.stdout", stdout)
+    app.use_utf8_output()
+    assert stdout.config == expected

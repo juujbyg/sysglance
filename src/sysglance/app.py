@@ -12,6 +12,7 @@ import glob
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections import defaultdict, deque
 from datetime import datetime
@@ -624,7 +625,14 @@ class Dashboard:
 
 
 
+def use_utf8_output():
+    """Older Windows consoles default to cp1252, which can't print the dashboard's symbols."""
+    if _compat.IS_WIN:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main():
+    use_utf8_output()
     ap = argparse.ArgumentParser(description="A friendly view of how your computer is doing")
     ap.add_argument("-i", "--interval", type=float, default=1.0, help="seconds between updates")
     ap.add_argument("--once", action="store_true", help="show one snapshot and exit")
