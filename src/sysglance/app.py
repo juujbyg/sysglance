@@ -3,7 +3,7 @@
 
 Usage:
     sysglance              # live view (press Ctrl+C to close)
-    sysglance -i 2         # update every 2 seconds
+    sysglance -i 5         # update every 5 seconds
     sysglance --once       # show a single snapshot and exit
 """
 
@@ -29,6 +29,7 @@ from sysglance import __version__ as VERSION
 from sysglance import _compat
 HISTORY = 40
 NARROW_CARD = 30  # cards below this width use shorter lines
+SLOW_REFRESH = 4  # seconds between the costlier reads (process list, sensors, disk)
 
 
 def read(path, default=None):
@@ -140,12 +141,14 @@ class IntelGPU(GPU):
     """
 
     ENGINES = {"render": "3D", "video": "Video", "video-enhance": "VidEnh", "copy": "Blit"}
+    RESCAN = 30  # seconds between searches for processes that started using the GPU
 
     def __init__(self, card):
         self.card = card
         self.sys = f"/sys/class/drm/{card}"
         self.name = "Intel integrated GPU"
         self._prev = None  # (wall_ns, {client_id: {engine: ns}})
+        self._files, self._next_scan = [], 0
 
     @staticmethod
     def detect():
@@ -155,9 +158,26 @@ class IntelGPU(GPU):
                 gpus.append(IntelGPU(os.path.basename(c)))
         return gpus
 
+    @staticmethod
+    def _find_client_files():
+        found = []
+        for link in glob.glob("/proc/[0-9]*/fd/*"):
+            try:
+                if os.readlink(link).startswith("/dev/dri/"):
+                    fdinfo = link.replace("/fd/", "/fdinfo/")
+                    with open(fdinfo) as f:
+                        if "drm-engine-" in f.read():
+                            found.append(fdinfo)
+            except OSError:
+                continue
+        return found
+
     def _read_clients(self):
+        if time.monotonic() >= self._next_scan:
+            self._files = self._find_client_files()
+            self._next_scan = time.monotonic() + self.RESCAN
         clients, mem = {}, 0
-        for fdinfo in glob.glob("/proc/[0-9]*/fdinfo/*"):
+        for fdinfo in self._files:
             try:
                 with open(fdinfo) as f:
                     data = f.read()
@@ -205,17 +225,11 @@ class IntelGPU(GPU):
             v = read(p)
             return float(v) if v is not None else None
 
-        temp = None
-        temps = _compat.temperatures()
-        for entry in temps.get("coretemp", []):
-            if entry.label.startswith("Package"):
-                temp = entry.current  # iGPU shares the CPU package
         return {
             "util": max(engines.values()) if engines else None,
             "engines": engines,
             "mem_used": mem or None,
             "mem_total": None,
-            "temp": temp,
             "freq": num(f"{self.sys}/gt_act_freq_mhz") or num(f"{self.sys}/gt_cur_freq_mhz"),
             "freq_max": num(f"{self.sys}/gt_max_freq_mhz"),
             "no_clients": not clients,
@@ -309,10 +323,8 @@ def big_number(pct, color, label):
 
 def sparkline(values, color):
     blocks = "▁▂▃▄▅▆▇█"
-    t = Text()
-    for v in values:
-        t.append(blocks[min(7, int(max(0, v) / 100 * 8))] if v is not None else " ", style=color)
-    return t
+    return Text("".join(blocks[min(7, int(max(0, v) / 100 * 8))] if v is not None else " "
+                        for v in values), style=color)
 
 
 def size(n):
@@ -395,6 +407,7 @@ class Dashboard:
         if self.gpu:
             self.gpu.sample()
         self.net_prev = (time.monotonic(), psutil.net_io_counters())
+        self.next_slow = 0
 
     def update(self):
         self.cpu = psutil.cpu_percent()
@@ -411,6 +424,17 @@ class Dashboard:
         for k, v in (("cpu", self.cpu), ("mem", self.vm.percent), ("gpu", self.gpu_pct)):
             self.hist[k].append(v)
 
+        now, net = time.monotonic(), psutil.net_io_counters()
+        dt = max(1e-3, now - self.net_prev[0])
+        self.down = (net.bytes_recv - self.net_prev[1].bytes_recv) / dt
+        self.up = (net.bytes_sent - self.net_prev[1].bytes_sent) / dt
+        self.net_prev = (now, net)
+
+        if now >= self.next_slow:
+            self.next_slow = now + SLOW_REFRESH
+            self.update_slow()
+
+    def update_slow(self):
         temps = _compat.temperatures()
         self.temp = next((e.current for e in temps.get("coretemp", []) if e.label.startswith("Package")),
                          next((e.current for es in temps.values() for e in es), None))
@@ -418,12 +442,6 @@ class Dashboard:
         self.fan = next((f.current for fs in fans.values() for f in fs if f.current), None)
         self.battery = _compat.battery()
         self.disk = psutil.disk_usage(_compat.root_path())
-
-        now, net = time.monotonic(), psutil.net_io_counters()
-        dt = max(1e-3, now - self.net_prev[0])
-        self.down = (net.bytes_recv - self.net_prev[1].bytes_recv) / dt
-        self.up = (net.bytes_sent - self.net_prev[1].bytes_sent) / dt
-        self.net_prev = (now, net)
 
         # Memory per app = private memory of every process + the largest shared chunk,
         # so 40 browser tabs sharing the same libraries aren't counted 40 times.
@@ -634,7 +652,7 @@ def use_utf8_output():
 def main():
     use_utf8_output()
     ap = argparse.ArgumentParser(description="A friendly view of how your computer is doing")
-    ap.add_argument("-i", "--interval", type=float, default=1.0, help="seconds between updates")
+    ap.add_argument("-i", "--interval", type=float, default=2.0, help="seconds between updates")
     ap.add_argument("--once", action="store_true", help="show one snapshot and exit")
     ap.add_argument("--version", action="version", version=f"sysglance {VERSION}")
     args = ap.parse_args()

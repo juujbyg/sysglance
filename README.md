@@ -51,7 +51,7 @@ pipx install git+https://github.com/juujbyg/sysglance
 
 ```bash
 sysglance              # live view, press Ctrl+C to close
-sysglance -i 2         # update every 2 seconds
+sysglance -i 5         # update every 5 seconds (default: 2)
 sysglance --once       # show one snapshot and exit
 sysglance --version
 ```

@@ -91,3 +91,26 @@ def test_output_encoding_is_forced_only_on_windows(monkeypatch, is_windows, expe
     monkeypatch.setattr("sys.stdout", stdout)
     app.use_utf8_output()
     assert stdout.config == expected
+
+
+def test_gpu_clients_are_only_searched_for_periodically(monkeypatch):
+    gpu = app.IntelGPU("card0")
+    scans = []
+    monkeypatch.setattr(gpu, "_find_client_files", lambda: scans.append(1) or [])
+    gpu._read_clients()
+    gpu._read_clients()
+    assert len(scans) == 1
+    gpu._next_scan = 0
+    gpu._read_clients()
+    assert len(scans) == 2
+
+
+def test_process_list_is_refreshed_less_often_than_the_display(monkeypatch):
+    dash = app.Dashboard(1)
+    refreshes = []
+    real = dash.update_slow
+    monkeypatch.setattr(dash, "update_slow", lambda: (refreshes.append(1), real()))
+    dash.update()
+    dash.update()
+    assert len(refreshes) == 1
+    assert dash.apps
